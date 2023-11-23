@@ -1170,7 +1170,7 @@ into and out of the viewing plane.
             cv2.line(canvas, (cx,cy-r), (cx,cy+r), white, thickness+2)
             cv2.line(canvas, (cx,cy-r), (cx,cy+r), color, thickness)
 
-    def drawSlice(self, offsets=None, crosshairs=True, fragments=True, overlay=None):
+    def drawSlice(self, offsets=None, crosshairs=True, fragments=True, overlay=None, colormap=None):
         timera = Utils.Timer(False)
         volume = self.volume_view
         if volume is None :
@@ -1263,7 +1263,10 @@ into and out of the viewing plane.
             for label_idx in np.unique(out_over):
                 if label_idx == 0:
                     continue
-                color = [int(65535 * c) for c in COLORLIST[label_idx % len(COLORLIST)].getRgbF()]
+                idx = label_idx % len(COLORLIST)
+                if colormap is not None:
+                    idx = colormap[label_idx]
+                color = [int(65535 * c) for c in COLORLIST[idx].getRgbF()]
                 mask = out_over == label_idx
                 for i in range(3):
                     tmprgbx[:, :, i][mask] = color[i]

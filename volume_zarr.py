@@ -269,7 +269,8 @@ class CachedZarrVolume():
         volume.gijk_steps = [1, 1, 1]
 
         array = load_tif(tiff_directory.strip())
-        volume.data = zarr.open(zarr.storage.LRUStoreCache(array.store, max_size=5*2**30), mode="r")
+        #volume.data = zarr.open(zarr.storage.LRUStoreCache(array.store, max_size=5*2**30), mode="r")
+        volume.data = Loader(array, max_mem_gb=5)
 
         volume.trdatas = []
         volume.trdatas.append(TransposedDataView(volume.data, 0))
@@ -307,7 +308,8 @@ class CachedZarrVolume():
 
     def unloadData(self, project_view):
         self.active_project_views.discard(project_view)
-        self.data.store.invalidate()
+        #self.data.store.invalidate()
+        self.data.clear_cache()
 
 
     def createTransposedData(self):

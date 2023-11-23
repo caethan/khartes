@@ -49,23 +49,28 @@ from ppm import Ppm
 from utils import COLORLIST
 
 import maxflow
+from structure_tensor import eig_special_3d, structure_tensor_3d
 from skimage.morphology import flood
 from skimage.segmentation import expand_labels, watershed
 from skimage.measure import label as apply_labels
 
 MAXFLOW_STRUCTURE = np.array(
-    [[[0, 0, 0],
-    [0, 1, 0],
-    [0, 0, 0]],
+    [[[1, 1, 1],
+    [1, 1, 1],
+    [1, 1, 1]],
 
-    [[0, 1, 0],
+    [[1, 1, 1],
     [1, 0, 1],
-    [0, 1, 0]],
+    [1, 1, 1]],
 
-    [[0, 0, 0],
-    [0, 1, 0],
-    [0, 0, 0]]]
+    [[1, 1, 1],
+    [1, 1, 1],
+    [1, 1, 1]]]
 )
+
+SIGNAL_SCALE = 1.0
+PLANARITY_SCALE = 1.0
+DIRECTION_SCALE = 1.0
 
 def compute_linkages(new_labels, saved_labels):
     """Counts the number of adjacent positions between every two labels.
@@ -83,7 +88,7 @@ def compute_linkages(new_labels, saved_labels):
         linkages[l] = links
     return linkages
 
-def find_sheets(section, saved_labels=None, threshold=32000, minsize=50, minval=2500):
+def find_sheets(section, saved_labels=None, threshold=30000, minsize=25, minval=2500):
     """Takes a 3D numpy array of uint16s and tries to separate papyrus sheets from 
     background.  First applies a simple threshold, then filters the resulting
     regions for both pixel count and average signal.
@@ -129,22 +134,106 @@ def split_label_maxflow(
     label and one connected to the sink label.  Uses a maximum flow/minimum cut algorithm to 
     try to find the splitting surface that goes through the fewest pixels with the minimum signal.
     """
+    int16 = (1 << 16) - 1
+    norm_signal = section_signal / int16
+    # ST parameters are still experimental and may need adjusting for different datasets
+    S = structure_tensor_3d(norm_signal, sigma=0.5, rho=0.5)
+    eigval, eigvec = eig_special_3d(S, full=True)
+    # Extract only the eigenvector corresponding to the largest eigenvalue and reverse
+    # axis order so that it corresponds to the input matrix shape.
+    eigvec = eigvec[2, ::-1, :, :, :]
+    # Set the z-component to be always positive by reversing vectors
+    mask = eigvec[0] < 0
+    for i in range(3):
+        eigvec[i][mask] *= -1
+
+    # N.B. for some use cases we may want to re-orient to positive z
+    # An estimate of planarity:  things are planar when the largest eigenvalue is 
+    # significantly larger than the other two
+    # note we want *lower* weights for *higher* planarity, so we invert to encourage cuts in planar regions
+    planarity = eigval[2] / eigval[1]
+    scale = np.log10(1 / planarity)
+    scale -= scale.min()
+
     graph = maxflow.GraphFloat()
     nodes = graph.add_grid_nodes(section_labels.shape)
-    weights = np.zeros_like(section_signal)
+    weights = np.zeros_like(norm_signal)
     keep_mask = (section_labels == source_label) | (section_labels == sink_label) | (new_labels == split_label)
-    weights[keep_mask] = section_signal[keep_mask]
-    weights = np.power((weights - 32000) / 64000, 2)
-    graph.add_grid_edges(nodes, weights=weights, structure=MAXFLOW_STRUCTURE)
+    weights[keep_mask] = norm_signal[keep_mask]
+    weights = np.power(weights, 2) * SIGNAL_SCALE + scale * PLANARITY_SCALE
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                z, y, x = (i-1, j-1, k-1)
+                if MAXFLOW_STRUCTURE[i,j,k]:
+                    structure = np.zeros((3, 3, 3))
+                    structure[i,j,k] = 1
+                    normvec = np.array([z, y, x], dtype=float)
+                    normvec /= np.sqrt(np.sum(normvec ** 2))
+                    eigvec_scale = 1 - np.abs(np.dot(eigvec.transpose(), normvec).transpose())
+                    local_weights = weights + eigvec_scale * DIRECTION_SCALE
+                    graph.add_grid_edges(nodes, weights=local_weights, structure=structure, symmetric=False)
+
+    #graph.add_grid_edges(nodes, weights=weights, structure=MAXFLOW_STRUCTURE)
     # Add extremely high capacities to the source & sink nodes
     sourcecaps = np.zeros_like(weights)
     sinkcaps = np.zeros_like(weights)
-    sourcecaps[section_labels == source_label] = 1e6
-    sinkcaps[section_labels == sink_label] = 1e6
+    # Split by applying source/sinks along the extrema along one axis
+    MAXWIDTH = 8
+
+
+
+
+
+    if source_label == "z":
+        zvals = [i for i in range(section_labels.shape[0]) if np.any(keep_mask[i, :, :])]
+        minz, maxz = min(zvals), max(zvals)
+        width = max(1, min(MAXWIDTH, (maxz - minz) // 3))
+        sourcecaps[minz:minz+width, :, :][keep_mask[minz:minz+width, :, :]] = 1e6
+        sinkcaps[maxz-width:maxz, :, :][keep_mask[maxz-width:maxz, :, :]] = 1e6
+    elif source_label == "y":
+        yvals = [i for i in range(section_labels.shape[1]) if np.any(keep_mask[:, i, :])]
+        miny, maxy = min(yvals), max(yvals)
+        width = max(1, min(MAXWIDTH, (maxy - miny) // 3))
+        sourcecaps[:, miny:miny+width, :][keep_mask[:, miny:miny+width, :]] = 1e6
+        sinkcaps[:, maxy-width:maxy, :][keep_mask[:, maxy-width:maxy, :]] = 1e6
+    elif source_label == "x":    
+        xvals = [i for i in range(section_labels.shape[2]) if np.any(keep_mask[:, :, i])]
+        minx, maxx = min(xvals), max(xvals)
+        width = max(1, min(MAXWIDTH, (maxx - minx) // 3))
+        sourcecaps[:, :, minx:minx+width][keep_mask[:, :, minx:minx+width]] = 1e6
+        sinkcaps[:, :, maxx-width:maxx][keep_mask[:, :, maxx-width:maxx]] = 1e6
+    elif source_label == "n":
+        # Split by applying source/sinks along the extrema along the "natural" axis
+        # as estimated by the primary eigenvector
+        zvals = [i for i in range(section_labels.shape[0]) if np.any(keep_mask[i, :, :])]
+        minz, maxz = min(zvals), max(zvals)
+        yvals = [i for i in range(section_labels.shape[1]) if np.any(keep_mask[:, i, :])]
+        miny, maxy = min(yvals), max(yvals)
+        xvals = [i for i in range(section_labels.shape[2]) if np.any(keep_mask[:, :, i])]
+        minx, maxx = min(xvals), max(xvals)
+        meanvec = np.array([
+            np.mean(eigvec[0, minz:maxz, miny:maxy, minx:maxx]),
+            np.mean(eigvec[1, minz:maxz, miny:maxy, minx:maxx]),
+            np.mean(eigvec[2, minz:maxz, miny:maxy, minx:maxx]),
+        ])
+        meanvec /= np.sqrt(np.sum(meanvec ** 2))
+        print(meanvec)
+        z, y, x = np.meshgrid(*[np.arange(s) for s in section_labels.shape], indexing='ij')
+        natural_dists = z * meanvec[0] + y * meanvec[1] + x * meanvec[2]
+        mind, maxd = np.min(natural_dists[keep_mask]), np.max(natural_dists[keep_mask])
+        width = max(1, min(MAXWIDTH, (maxd - mind) // 3))
+        sourcemask = (natural_dists < (mind + width)) & keep_mask
+        sourcecaps[sourcemask] = 1e6
+        sinkmask = (natural_dists > (maxd - width)) & keep_mask
+        sinkcaps[sinkmask] = 1e6
+    else:
+        sourcecaps[section_labels == source_label] = 1e6
+        sinkcaps[section_labels == sink_label] = 1e6
 
     graph.add_grid_tedges(nodes, sourcecaps, sinkcaps)
     graph.maxflow()
-    sgm = graph.get_grid_segments(nodes) & (new_labels > 0)
+    sgm = graph.get_grid_segments(nodes) & (new_labels == split_label)
     new_labels[sgm] = new_label
     return new_labels
 
@@ -309,9 +398,25 @@ class AnnotationWindow(QWidget):
             for datawindow in [self.depth[i], self.inline[i], self.xline[i]]:
                 datawindow.setVolumeView(volume_view)
 
+    def get_colors(self):
+        colors_used = set()
+        colormap = {}
+        all_labels = []
+        if self.saved_labels is not None:
+            all_labels.extend([idx for idx in np.unique(self.saved_labels) if idx > 0])
+        if self.new_labels is not None:
+            all_labels.extend([idx for idx in np.unique(self.new_labels) if idx != 0])
+        all_labels = np.unique(all_labels)
+        for idx in all_labels:
+            color_idx = idx % len(COLORLIST)
+            colors_used.add(color_idx)
+            colormap[idx] = color_idx
+        return colormap
+
     def update_saved_label_table(self):
         if self.saved_labels is None:
             return
+        colormap = self.get_colors()
         idxs = [idx for idx in np.unique(self.saved_labels) if idx > 0]
         self.saved_table.clearContents()
         self.saved_table.setRowCount(len(idxs))
@@ -320,7 +425,7 @@ class AnnotationWindow(QWidget):
             self.saved_table.setItem(row_i, 0, QTableWidgetItem(str(idx)))
             # A cell needs empty text to be able to set the background color
             self.saved_table.setItem(row_i, 1, QTableWidgetItem(""))
-            self.saved_table.item(row_i, 1).setBackground(COLORLIST[idx % len(COLORLIST)])
+            self.saved_table.item(row_i, 1).setBackground(COLORLIST[colormap[idx]])
             # Clear button
             button = QPushButton()
             button.setText("Clear")
@@ -330,6 +435,7 @@ class AnnotationWindow(QWidget):
     def update_new_label_table(self):
         if self.new_labels is None:
             return
+        colormap = self.get_colors()
         linkages = compute_linkages(self.new_labels, self.saved_labels)
         idxs = [idx for idx in np.unique(self.new_labels) if idx != 0]
         self.new_table.clearContents()
@@ -339,7 +445,7 @@ class AnnotationWindow(QWidget):
             self.new_table.setItem(row_i, 0, QTableWidgetItem(str(idx)))
             # A cell needs empty text to be able to set the background color
             self.new_table.setItem(row_i, 1, QTableWidgetItem(""))
-            self.new_table.item(row_i, 1).setBackground(COLORLIST[idx % len(COLORLIST)])
+            self.new_table.item(row_i, 1).setBackground(COLORLIST[colormap[idx]])
             self.new_table.setItem(row_i, 2, QTableWidgetItem(f"{mask.sum():,}"))
             self.new_table.setItem(row_i, 3, 
                                    QTableWidgetItem(f"{int(np.mean(self.signal_section[mask])):,}")
@@ -431,16 +537,21 @@ class AnnotationWindow(QWidget):
             return
         label_id = int(self.new_table.item(row_idx, 0).text())
         new_label_id = np.max(self.new_labels) + 1
-        split_str = self.new_table.cellWidget(row_idx, 6).text()
+        split_str = self.new_table.cellWidget(row_idx, 6).text().lower()
         if not split_str:
-            print("No split labels provided")
-            return
-        try:
-            split1, split2 = tuple([int(s) for s in split_str.split(",")])
-        except:
-            print("Invalid split labels provided")
-            return
-        split_label_maxflow(
+            print("Defaulting to natural axis split")
+            #print("No split labels provided")
+            #return
+            split_str = "n"
+        if split_str in ["x", "y", "z", "n"]:
+            split1, split2 = split_str, None
+        else:
+            try:
+                split1, split2 = tuple([int(s) for s in split_str.split(",")])
+            except:
+                print("Invalid split labels provided")
+                return
+        self.new_labels = split_label_maxflow(
             self.signal_section,
             self.saved_labels,
             self.new_labels,

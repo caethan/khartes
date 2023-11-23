@@ -260,22 +260,14 @@ class Utils:
 
 # High intensity colors for volume annotations
 COLORLIST = [
-    QCC.Svg.hotpink,
     QCC.Svg.blue,
     QCC.Svg.red,
     QCC.Svg.magenta,
     QCC.Svg.green,
+    QCC.Svg.orange,
+    QCC.Svg.orangered,
+    QCC.Svg.darkcyan,
+    QCC.Svg.dodgerblue,
     QCC.Svg.blueviolet,
-    QCC.Svg.chocolate,
-    QCC.Svg.crimson,
-    QCC.Svg.cyan,
-    QCC.Svg.darkgoldenrod,
-    QCC.Svg.darkgreen,
-    QCC.Svg.darkmagenta,
-    QCC.Svg.darkorange,
-    QCC.Svg.darkseagreen,
-    QCC.Svg.gold,
-    QCC.Svg.greenyellow,
-    QCC.Svg.yellow,
-    QCC.Svg.yellowgreen,
+    QCC.Svg.indianred,
     ]
