@@ -270,4 +270,6 @@ COLORLIST = [
     QCC.Svg.dodgerblue,
     QCC.Svg.blueviolet,
     QCC.Svg.indianred,
+    QCC.Svg.violet,
+    QCC.Svg.yellowgreen,
     ]

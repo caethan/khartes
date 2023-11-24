@@ -160,7 +160,7 @@ def split_label_maxflow(
     weights = np.zeros_like(norm_signal)
     keep_mask = (section_labels == source_label) | (section_labels == sink_label) | (new_labels == split_label)
     weights[keep_mask] = norm_signal[keep_mask]
-    weights = np.power(weights, 2) * SIGNAL_SCALE + scale * PLANARITY_SCALE
+    weights = np.power(weights, 2) * SIGNAL_SCALE * scale * PLANARITY_SCALE
     for i in range(3):
         for j in range(3):
             for k in range(3):
@@ -171,7 +171,7 @@ def split_label_maxflow(
                     normvec = np.array([z, y, x], dtype=float)
                     normvec /= np.sqrt(np.sum(normvec ** 2))
                     eigvec_scale = 1 - np.abs(np.dot(eigvec.transpose(), normvec).transpose())
-                    local_weights = weights + eigvec_scale * DIRECTION_SCALE
+                    local_weights = weights * eigvec_scale * DIRECTION_SCALE
                     graph.add_grid_edges(nodes, weights=local_weights, structure=structure, symmetric=False)
 
     #graph.add_grid_edges(nodes, weights=weights, structure=MAXFLOW_STRUCTURE)
@@ -180,11 +180,6 @@ def split_label_maxflow(
     sinkcaps = np.zeros_like(weights)
     # Split by applying source/sinks along the extrema along one axis
     MAXWIDTH = 8
-
-
-
-
-
     if source_label == "z":
         zvals = [i for i in range(section_labels.shape[0]) if np.any(keep_mask[i, :, :])]
         minz, maxz = min(zvals), max(zvals)
