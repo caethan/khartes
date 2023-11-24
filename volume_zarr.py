@@ -77,37 +77,6 @@ def load_tif(path):
     stack_array = zarr.open(store, mode="r")
     return stack_array
 
-def load_writable_volume(path):
-    """This function takes a path to a zarr DirectoryStore folder that contains
-    chunked volume information.  This zarr Array is writable and can be used
-    for fast persistent storage.
-    """
-    if not os.path.exists(path):
-        raise ValueError("Error: f{path} does not exist")
-    store = zarr.DirectoryStore(path)
-    root = zarr.group(store=store, overwrite=False)
-    return root.volume
-
-def create_writeable_volume(path, volume_shape):
-    """Generates a new zarr Array object serialized to disk as an empty array of
-    zeros.  Requires the size of the array to be given; this may be arbitrarily
-    large.  When initialized, this takes up very little space on disk since all
-    chunks are empty.  As it is written, it can get much larger.  Be sure you
-    have enough disk space!
-    """
-    if os.path.exists(path):
-        raise ValueError("Error: f{path} already exists")
-    store = zarr.DirectoryStore(path)
-    root = zarr.group(store=store, overwrite=True)
-    volume = root.zeros(
-        name="volume",
-        shape=volume_shape,
-        chunks=tuple([CHUNK_SIZE for d in volume_shape]),
-        dtype=np.uint16,
-        write_empty_chunks=False,
-    )
-    return volume
-
 def slice_to_hashable(slice):
     return (slice.start, slice.stop)
 
@@ -300,7 +269,8 @@ class CachedZarrVolume():
         volume.gijk_steps = [1, 1, 1]
 
         array = load_tif(tiff_directory.strip())
-        volume.data = zarr.open(zarr.storage.LRUStoreCache(array.store, max_size=5*2**30), mode="r")
+        #volume.data = zarr.open(zarr.storage.LRUStoreCache(array.store, max_size=5*2**30), mode="r")
+        volume.data = Loader(array, max_mem_gb=5)
 
         volume.trdatas = []
         volume.trdatas.append(TransposedDataView(volume.data, 0))
@@ -338,7 +308,8 @@ class CachedZarrVolume():
 
     def unloadData(self, project_view):
         self.active_project_views.discard(project_view)
-        self.data.store.invalidate()
+        #self.data.store.invalidate()
+        self.data.clear_cache()
 
 
     def createTransposedData(self):

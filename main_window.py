@@ -35,6 +35,8 @@ from PyQt5.QtXml import QDomDocument
 
 from tiff_loader import TiffLoader
 from data_window import DataWindow, SurfaceWindow
+from annotation_window import AnnotationWindow
+from annotation_loader import AnnotationLoader
 from project import Project, ProjectView
 from fragment import Fragment, FragmentsModel, FragmentView
 from trgl_fragment import TrglFragment, TrglFragmentView
@@ -250,6 +252,42 @@ class InfillDialog(QDialog):
         else:
             self.edit.setStyleSheet("QLineEdit { color: red }")
 
+class AnnotationWindowButton(QWidget):
+    def __init__(self, main_window, parent=None):
+        super(AnnotationWindowButton, self).__init__(parent)
+        self.main_window = main_window
+        self.window = None
+        self.button = QPushButton("Open Annotation Window")
+        self.button.clicked.connect(self.open_window)
+        hlayout = QHBoxLayout()
+        self.setLayout(hlayout)
+        hlayout.addWidget(self.button)
+
+    def open_window(self):
+        if self.window is None:
+            self.window = AnnotationWindow(self.main_window)
+            self.main_window.annotation_window = self.window
+            pv = self.main_window.project_view
+            vv = pv.cur_volume_view
+            self.window.setVolumeView(vv)
+            self.window.drawSlices()
+        self.window.show()
+
+class OpenAnnotationFileButton(QWidget):
+    def __init__(self, main_window, parent=None):
+        super(OpenAnnotationFileButton, self).__init__(parent)
+        self.main_window = main_window
+        self.main_window.annotation = None
+        self.button = QPushButton("Open Saved Annotations")
+        self.button.clicked.connect(self.open_annotation)
+        hlayout = QHBoxLayout()
+        self.setLayout(hlayout)
+        hlayout.addWidget(self.button)
+
+    def open_annotation(self):
+        loader = AnnotationLoader(self.main_window)
+        loader.show()
+
 class PositionSetter(QWidget):
     def __init__(self, main_window, parent=None):
         super(PositionSetter, self).__init__(parent)
@@ -289,7 +327,8 @@ class PositionSetter(QWidget):
         y = self.ysetter.value()
         x = self.xsetter.value()
         self.main_window.recenterCurrentVolume(np.array([x, y, z]))
-
+        if self.main_window.annotation_window is not None:
+            self.main_window.annotation_window.drawSlices()
 
 class ZInterpolationSetter(QWidget):
     def __init__(self, main_window, parent=None):
@@ -740,6 +779,8 @@ class MainWindow(QMainWindow):
         self.project_view = None
         self.cursor_tijk = None
         self.cursor_window = None
+        self.annotation_window = None
+        self.annotation = None
         args = QCoreApplication.arguments()
         path = os.path.dirname(os.path.realpath(args[0]))
         # https://iconduck.com/icons/163625/openhand
@@ -1086,10 +1127,18 @@ class MainWindow(QMainWindow):
         vlayout.addWidget(possetter)
         vlayout.addStretch()
 
+        self.annotation_label = QLabel("")
+        self.annotation_label.setAlignment(Qt.AlignLeft)
+        vlayout.addWidget(self.annotation_label)
+
+        loaderbutton = OpenAnnotationFileButton(self)
+        vlayout.addWidget(loaderbutton)
+
+        annobutton = AnnotationWindowButton(self)
+        vlayout.addWidget(annobutton)
+
         # TODO: 
         # - Button w/ Window to load in volume label data from zarr
-        # - Box w/ x, y, z radii and a "set radii" button
-        # - Button to open up window w/ lots of neighboring slices (with label overlays)
         # - Table of volume labels from the annotation file in the current region
         #   - label, pixel count, mean position, etc.
         # - Button to generate putative new labels in current region
@@ -2258,6 +2307,12 @@ class MainWindow(QMainWindow):
         # intentionally called a second time to use
         # cur_volume information to set fragment view volume
         self.setProjectView(pv)
+        # Load in annotations
+        print(pv.project.annotations)
+        if pv.project.annotations:
+            self.annotation = pv.project.annotations
+            print(self.annotation.path)
+            self.annotation_label.setText(self.annotation.path)
         # print("project view set")
         path = Path(fname)
         path = path.absolute()
@@ -2425,11 +2480,13 @@ class MainWindow(QMainWindow):
         # print("pv set updata frag views")
         pv.updateFragmentViews()
         # print("set vol views")
-        self.depth.setVolumeView(vv);
-        self.xline.setVolumeView(vv);
-        self.inline.setVolumeView(vv);
-        self.surface.setVolumeView(vv);
+        self.depth.setVolumeView(vv)
+        self.xline.setVolumeView(vv)
+        self.inline.setVolumeView(vv)
+        self.surface.setVolumeView(vv)
         # print("draw slices")
+        if self.annotation_window is not None:
+            self.annotation_window.setVolumeView(vv)
         self.drawSlices()
 
     def setVolumeViewColor(self, volume_view, color):
@@ -2629,6 +2686,8 @@ class MainWindow(QMainWindow):
         self.xline.drawSlice()
         self.inline.drawSlice()
         self.surface.drawSlice()
+        if self.annotation_window is not None:
+            self.annotation_window.drawSlices()
 
     def getVoxelSizeUm(self):
         if self.project_view is None:

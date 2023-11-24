@@ -8,7 +8,7 @@ import numpy as np
 import numpy.linalg as npla
 import cv2
 
-from utils import Utils
+from utils import Utils, COLORLIST
 from st import ST
 # import PIL
 # import PIL.Image
@@ -76,18 +76,6 @@ class DataWindow(QLabel):
 
     def getDrawWidth(self, name):
         return self.window.draw_settings[name]["width"]
-
-    '''
-    def getDrawOpacity(self, name):
-        dsn = self.window.draw_settings[name]
-        opacity = sdn["opacity"]
-        apply = sdn["apply_opacity"]
-        if name == "overlay":
-            return opacity
-        if not apply:
-            return 1.0
-        return opacity
-    '''
 
     def getDrawOpacity(self, name):
         return self.window.draw_settings[name]["opacity"]
@@ -1182,7 +1170,7 @@ into and out of the viewing plane.
             cv2.line(canvas, (cx,cy-r), (cx,cy+r), white, thickness+2)
             cv2.line(canvas, (cx,cy-r), (cx,cy+r), color, thickness)
 
-    def drawSlice(self):
+    def drawSlice(self, offsets=None, crosshairs=True, fragments=True, overlay=None, colormap=None):
         timera = Utils.Timer(False)
         volume = self.volume_view
         if volume is None :
@@ -1201,7 +1189,17 @@ into and out of the viewing plane.
         self.setMargin(0)
         self.window.setFocus()
         z = self.getZoom()
-        slc = volume.getSlice(self.axis, volume.ijktf)
+        if offsets is None:
+            ijktf = volume.ijktf
+        else:
+            ijktf = (
+                volume.ijktf[0] + offsets[0],
+                volume.ijktf[1] + offsets[1],
+                volume.ijktf[2] + offsets[2],
+            )
+        slc = volume.getSlice(self.axis, ijktf)
+        if overlay is not None:
+            assert slc.shape == overlay.shape
         # slice width, height
         sw = slc.shape[1]
         sh = slc.shape[0]
@@ -1221,6 +1219,7 @@ into and out of the viewing plane.
         #fi, fj = self.tijkToIj(volume.ijktf)
 
         out = np.zeros((wh,ww), dtype=np.uint16)
+        out_over = np.zeros((wh, ww), dtype=np.uint16)
 
         # Pasting zoomed data slice into viewing-area array, taking
         # panning into account.
@@ -1248,6 +1247,9 @@ into and out of the viewing plane.
             # print(x1s,y1s,x2s,y2s)
             zslc = cv2.resize(slc[y1s:y2s,x1s:x2s], (x2-x1, y2-y1), interpolation=cv2.INTER_AREA)
             out[y1:y2, x1:x2] = zslc
+            if overlay is not None:
+                slc_over = cv2.resize(overlay[y1s:y2s,x1s:x2s], (x2-x1, y2-y1), interpolation=cv2.INTER_NEAREST)
+                out_over[y1:y2, x1:x2] = slc_over
 
             timera.time("resize")
         # timera.time("fit rect")
@@ -1255,6 +1257,22 @@ into and out of the viewing plane.
         # convert 16-bit (uint16) gray scale to 16-bit RGBX (X is like
         # alpha, but always has the value 65535)
         outrgbx = np.stack(((out,)*3), axis=-1)
+        color = [0, 32000, 64000]
+        if overlay is not None:
+            tmprgbx = np.copy(outrgbx)
+            for label_idx in np.unique(out_over):
+                if label_idx == 0:
+                    continue
+                idx = label_idx % len(COLORLIST)
+                if colormap is not None:
+                    idx = colormap[label_idx]
+                color = [int(65535 * c) for c in COLORLIST[idx].getRgbF()]
+                mask = out_over == label_idx
+                for i in range(3):
+                    tmprgbx[:, :, i][mask] = color[i]
+            outrgbx = cv2.addWeighted(outrgbx, 0.75, tmprgbx, 0.25, 0)
+
+        # out_over is now the label IDs for this region
         original = None
         # if opacity > 0 and opacity < 1:
         if opacity < 1:
@@ -1286,7 +1304,7 @@ into and out of the viewing plane.
 
         # size = self.crosshairSize
         size = self.getDrawWidth("axes")
-        if size > 0:
+        if size > 0 and crosshairs:
             cv2.line(outrgbx, (fx,0), (fx,wh), self.axisColor(self.iIndex), size)
             cv2.line(outrgbx, (0,fy), (ww,fy), self.axisColor(self.jIndex), size)
             if not apply_axes_opacity:
@@ -1312,6 +1330,8 @@ into and out of the viewing plane.
         wj1 = max(oj0, oj1)
 
         for frag in self.fragmentViews():
+            if not fragments:
+                continue
             fragNodeSize = nodeSize
             apply_frag_node_opacity = apply_node_opacity
             if not frag.mesh_visible:
@@ -1496,6 +1516,8 @@ into and out of the viewing plane.
         # print(self.cur_frag_pts_xyijk.shape)
         label = self.sliceGlobalLabel()
         gpos = self.sliceGlobalPosition()
+        if offsets is not None:
+            gpos += offsets[self.axis]
         # print("label", self.axis, label, gpos)
         txt = "%s: %d" % (label, gpos)
         org = (10,20)
@@ -1599,7 +1621,6 @@ class SurfaceWindow(DataWindow):
         out = np.zeros((wh,ww), dtype=np.uint16)
         overout = None
         overout = np.zeros((wh,ww), dtype=np.uint16)
-        overlay = None
         timera.time("zeros")
         # convert 16-bit (uint16) gray scale to 16-bit RGBX (X is like
         # alpha, but always has the value 65535)
@@ -1677,36 +1698,11 @@ class SurfaceWindow(DataWindow):
             apply_node_opacity = True
             apply_free_node_opacity = True
             apply_mesh_opacity = True
-        '''
-        # Needs to be rewritten; outdated
-        if overout is not None:
-            outrgbx[:,:,0:3] //= 4
-            outrgbx[:,:,0:3] *= 3
-            # gt0 = curfv.gt0
-            # lt0 = curfv.lt0
-            mn = np.nanmin(overout)
-            mx = np.nanmax(overout)
-            amax = max(abs(mn),abs(mx))
-            if amax > 0:
-                overout /= amax
-            gt0 = overout >= 0
-            lt0 = overout < 0
-            ogt0 = (65536*overout[gt0]).astype(np.uint16)
-            olt0 = (-65536*overout[lt0]).astype(np.uint16)
-            
-            ogt0 //= 4
-            olt0 //= 4
-
-            outrgbx[gt0,0] += ogt0
-            outrgbx[gt0,2] += ogt0
-            outrgbx[lt0,1] += olt0
-        '''
 
         timera.time("draw cv2 underlay")
         fij = self.tijkToIj(volume.ijktf)
         fx,fy = self.ijToXy(fij)
 
-        # size = self.crosshairSize
         size = self.getDrawWidth("axes")
         if size > 0:
             cv2.line(outrgbx, (fx,0), (fx,wh), self.axisColor(self.iIndex), size)

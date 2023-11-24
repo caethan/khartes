@@ -132,7 +132,6 @@ class Utils:
     QCC.Svg.azure,
     QCC.Svg.beige,
     QCC.Svg.bisque,
-    QCC.Svg.black,
     QCC.Svg.blanchedalmond,
     QCC.Svg.blue,
     QCC.Svg.blueviolet,
@@ -173,14 +172,12 @@ class Utils:
     QCC.Svg.gainsboro,
     QCC.Svg.gold,
     QCC.Svg.goldenrod,
-    QCC.Svg.gray,
     QCC.Svg.green,
     QCC.Svg.greenyellow,
     QCC.Svg.honeydew,
     QCC.Svg.hotpink,
     QCC.Svg.indianred,
     QCC.Svg.indigo,
-    QCC.Svg.ivory,
     QCC.Svg.khaki,
     QCC.Svg.lavender,
     QCC.Svg.lavenderblush,
@@ -201,7 +198,6 @@ class Utils:
     QCC.Svg.lightyellow,
     QCC.Svg.lime,
     QCC.Svg.limegreen,
-    QCC.Svg.linen,
     QCC.Svg.magenta,
     QCC.Svg.maroon,
     QCC.Svg.mediumaquamarine,
@@ -261,4 +257,19 @@ class Utils:
     QCC.Svg.yellow,
     QCC.Svg.yellowgreen,
     ]
-    
+
+# High intensity colors for volume annotations
+COLORLIST = [
+    QCC.Svg.blue,
+    QCC.Svg.red,
+    QCC.Svg.magenta,
+    QCC.Svg.green,
+    QCC.Svg.orange,
+    QCC.Svg.orangered,
+    QCC.Svg.darkcyan,
+    QCC.Svg.dodgerblue,
+    QCC.Svg.blueviolet,
+    QCC.Svg.indianred,
+    QCC.Svg.violet,
+    QCC.Svg.yellowgreen,
+    ]
