@@ -53,6 +53,7 @@ from structure_tensor import eig_special_3d, structure_tensor_3d
 from skimage.morphology import flood
 from skimage.segmentation import expand_labels, watershed
 from skimage.measure import label as apply_labels
+import scipy.optimize as optimize
 
 MAXFLOW_STRUCTURE = np.array(
     [[[1, 1, 1],
@@ -135,17 +136,13 @@ def split_label_maxflow(
     try to find the splitting surface that goes through the fewest pixels with the minimum signal.
     """
     int16 = (1 << 16) - 1
-    norm_signal = section_signal / int16
+    norm_signal = (section_signal / int16).astype(float)
     # ST parameters are still experimental and may need adjusting for different datasets
     S = structure_tensor_3d(norm_signal, sigma=0.5, rho=0.5)
     eigval, eigvec = eig_special_3d(S, full=True)
     # Extract only the eigenvector corresponding to the largest eigenvalue and reverse
     # axis order so that it corresponds to the input matrix shape.
     eigvec = eigvec[2, ::-1, :, :, :]
-    # Set the z-component to be always positive by reversing vectors
-    mask = eigvec[0] < 0
-    for i in range(3):
-        eigvec[i][mask] *= -1
 
     # N.B. for some use cases we may want to re-orient to positive z
     # An estimate of planarity:  things are planar when the largest eigenvalue is 
@@ -160,7 +157,7 @@ def split_label_maxflow(
     weights = np.zeros_like(norm_signal)
     keep_mask = (section_labels == source_label) | (section_labels == sink_label) | (new_labels == split_label)
     weights[keep_mask] = norm_signal[keep_mask]
-    weights = np.power(weights, 2) * SIGNAL_SCALE * scale * PLANARITY_SCALE
+    weights = np.power(weights, 1.2) * SIGNAL_SCALE * scale * PLANARITY_SCALE
     for i in range(3):
         for j in range(3):
             for k in range(3):
@@ -200,19 +197,36 @@ def split_label_maxflow(
         sinkcaps[:, :, maxx-width:maxx][keep_mask[:, :, maxx-width:maxx]] = 1e6
     elif source_label == "n":
         # Split by applying source/sinks along the extrema along the "natural" axis
-        # as estimated by the primary eigenvector
+        # Estimate the natural axis by the best-fit line to the eigenvectors in this region
         zvals = [i for i in range(section_labels.shape[0]) if np.any(keep_mask[i, :, :])]
         minz, maxz = min(zvals), max(zvals)
         yvals = [i for i in range(section_labels.shape[1]) if np.any(keep_mask[:, i, :])]
         miny, maxy = min(yvals), max(yvals)
         xvals = [i for i in range(section_labels.shape[2]) if np.any(keep_mask[:, :, i])]
         minx, maxx = min(xvals), max(xvals)
-        meanvec = np.array([
-            np.mean(eigvec[0, minz:maxz, miny:maxy, minx:maxx]),
-            np.mean(eigvec[1, minz:maxz, miny:maxy, minx:maxx]),
-            np.mean(eigvec[2, minz:maxz, miny:maxy, minx:maxx]),
-        ])
-        meanvec /= np.sqrt(np.sum(meanvec ** 2))
+        col_eigvec = eigvec[:, minz:maxz, miny:maxy, minx:maxx]
+        col_eigvec = eigvec[:, keep_mask].T
+
+        def perp_error(params, col_eigvec):
+            a, b, c = params
+            local_vec = np.array([a, b, c])
+            return (np.cross(local_vec, col_eigvec) ** 2).sum(axis=1)
+
+        def unit_length(params):
+            """
+            Constrain the vector perpendicular to the plane to be of unit length.
+            """
+            a, b, c = params
+            return a**2 + b**2 + c**2 - 1
+
+        initial_guess = [0, 1, 0]
+        cons = ({'type': 'eq', 'fun': unit_length})
+        min_kwargs = {"constraints": cons, "args": col_eigvec}
+        solution = optimize.basinhopping(
+            perp_error, initial_guess, minimizer_kwargs=min_kwargs, niter=5, 
+            disp=True,
+        )
+        meanvec = np.array(list(solution.x))
         print(meanvec)
         z, y, x = np.meshgrid(*[np.arange(s) for s in section_labels.shape], indexing='ij')
         natural_dists = z * meanvec[0] + y * meanvec[1] + x * meanvec[2]
@@ -331,7 +345,8 @@ class AnnotationWindow(QWidget):
         labels = [
             "Saved Label ID",
             "Color",
-            "Controls",
+            "Clear",
+            "Auto-Fill",
         ]
         self.saved_table.setColumnCount(len(labels))
         self.saved_table.setHorizontalHeaderLabels(labels)
@@ -426,6 +441,11 @@ class AnnotationWindow(QWidget):
             button.setText("Clear")
             button.clicked.connect(self.clear_button_clicked)
             self.saved_table.setCellWidget(row_i, 2, button)
+            # Auto-fill button
+            button = QPushButton()
+            button.setText("Fill")
+            button.clicked.connect(self.autofill_button_clicked)
+            self.saved_table.setCellWidget(row_i, 3, button)
 
     def update_new_label_table(self):
         if self.new_labels is None:
@@ -591,6 +611,23 @@ class AnnotationWindow(QWidget):
         )
         self.main_window.annotation.write_annotations(self.saved_labels, islice, jslice, kslice)
         self.drawSlices()
+
+    def autofill_button_clicked(self):
+        button = self.sender()
+        col_idx = 3
+        row_idx = None
+        for i in range(self.saved_table.rowCount()):
+            if self.saved_table.cellWidget(i, col_idx) == button:
+                row_idx = i
+        if row_idx is None:
+            print("Button sender not found")
+            return
+        label_id = int(self.saved_table.item(row_idx, 0).text())
+        vv = self.volume_view
+        vol = self.volume_view.volume
+        it, jt, kt = vol.transposedIjkToIjk(vv.ijktf, vv.direction)
+        print(f"Auto-filling label {label_id} around position ({it}, {jt}, {kt})")
+
 
     def drawSlices(self, update_labels=True):
         vv = self.volume_view
