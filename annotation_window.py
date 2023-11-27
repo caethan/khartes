@@ -210,7 +210,7 @@ def split_label_maxflow(
         def perp_error(params, col_eigvec):
             a, b, c = params
             local_vec = np.array([a, b, c])
-            return (np.cross(local_vec, col_eigvec) ** 2).sum(axis=1)
+            return np.mean((np.cross(local_vec, col_eigvec) ** 2).sum(axis=1))
 
         def unit_length(params):
             """
@@ -222,9 +222,9 @@ def split_label_maxflow(
         initial_guess = [0, 1, 0]
         cons = ({'type': 'eq', 'fun': unit_length})
         min_kwargs = {"constraints": cons, "args": col_eigvec}
-        solution = optimize.basinhopping(
-            perp_error, initial_guess, minimizer_kwargs=min_kwargs, niter=5, 
-            disp=True,
+        solution = optimize.minimize(
+            perp_error, initial_guess, **min_kwargs, method="SLSQP",
+            options={"disp": True},
         )
         meanvec = np.array(list(solution.x))
         print(meanvec)
