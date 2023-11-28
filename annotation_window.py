@@ -54,6 +54,7 @@ from skimage.morphology import flood
 from skimage.segmentation import expand_labels, watershed
 from skimage.measure import label as apply_labels
 import scipy.optimize as optimize
+from collections import deque
 
 MAXFLOW_STRUCTURE = np.array(
     [[[1, 1, 1],
@@ -72,6 +73,95 @@ MAXFLOW_STRUCTURE = np.array(
 SIGNAL_SCALE = 1.0
 PLANARITY_SCALE = 1.0
 DIRECTION_SCALE = 1.0
+
+BOX_WIDTH = 41
+BOX_PADDING = 15
+BOX_RADIUS = BOX_WIDTH // 2
+MAX_AUTOFILL_DISTANCE = 200
+
+def compute_perp_dists_to_plane(params, x, y, z):
+    a, b, c, d = params
+    length = np.sqrt(a ** 2 + b ** 2 + c ** 2)
+    return (np.abs(a * x + b * y + c * z + d) / length)
+
+def perp_error(params, xyz):
+    x, y, z = xyz
+    dists = compute_perp_dists_to_plane(params, x, y, z)
+    # Compute the mean squared distance (note we drop the square root since
+    # it doesn't matter for minimization purposes)
+    return np.mean(dists ** 2)
+
+def fit_plane_to_data(x, y, z):
+    """
+    Basin-Hopping method, minimize mean absolute values of the
+    orthogonal distances.
+    """
+    def unit_length(params):
+        """
+        Constrain the vector perpendicular to the plane to be of unit length.
+        """
+        a, b, c, d = params
+        return a**2 + b**2 + c**2 - 1
+
+    # Random initial guess for the a,b,c,d plane coefficients.
+    initial_guess = np.random.uniform(-10., 10., 4)
+
+    # Constrain the vector perpendicular to the plane to be of unit length.
+    cons = ({'type': 'eq', 'fun': unit_length})
+    min_kwargs = {"constraints": cons, "args": [x, y, z]}
+
+    # obtain the best fit coefficients.
+    sol = optimize.minimize(
+        perp_error, initial_guess, **min_kwargs, method="SLSQP", 
+        options={"disp": False},
+    )
+    return list(sol.x)
+
+def get_new_box_centers(subsection, saved_labels, init_coord, saved_label_id):
+    zpos, ypos, xpos = init_coord
+    mask = saved_labels == saved_label_id
+    
+    z, y, x = np.meshgrid(*[np.arange(s) for s in subsection.shape], indexing='ij')
+    
+    for idx in [0, -1]:
+        if np.any(mask[idx, :, :]):
+            yield (
+                zpos + (BOX_PADDING if idx == -1 else -BOX_PADDING),
+                ypos + int(np.median(y[idx, :, :][mask[idx, :, :]])) - BOX_RADIUS,
+                xpos + int(np.median(x[idx, :, :][mask[idx, :, :]])) - BOX_RADIUS,
+            )
+        if np.any(mask[:, idx, :]):
+            yield (
+                zpos + int(np.median(z[:, idx, :][mask[:, idx, :]])) - BOX_RADIUS,
+                ypos + (BOX_PADDING if idx == -1 else -BOX_PADDING),
+                xpos + int(np.median(x[:, idx, :][mask[:, idx, :]])) - BOX_RADIUS,
+            )
+        if np.any(mask[:, :, idx]):
+            yield (
+                zpos + int(np.median(z[:, :, idx][mask[:, :, idx]])) - BOX_RADIUS,
+                ypos + int(np.median(y[:, :, idx][mask[:, :, idx]])) - BOX_RADIUS,
+                xpos + (BOX_PADDING if idx == -1 else -BOX_PADDING),
+            )
+
+def check_box_for_extension(subsection, saved_labels, saved_label_id):
+    local_labels = find_sheets(subsection, saved_labels)
+    z, y, x = np.meshgrid(*[np.arange(s) for s in local_labels.shape], indexing='ij')
+    linkages = compute_linkages(local_labels, saved_labels)
+    valid_new_label_ids = [l for l in linkages if (len(linkages[l]) == 1) and (saved_label_id in linkages[l])]
+    if not valid_new_label_ids:
+        return None
+    saved_mask = saved_labels == saved_label_id
+    plane_params = fit_plane_to_data(x[saved_mask], y[saved_mask], z[saved_mask])
+    dists = compute_perp_dists_to_plane(plane_params, x, y, z)
+    if np.percentile(dists[saved_mask], 95) > 8 or np.sum(saved_mask) < 50:
+        # The existing annotations do not fit a plane well enough to confidently extend
+        return None
+    for new_label_id in valid_new_label_ids:
+        new_mask = local_labels == new_label_id
+        dist_95perc = np.percentile(dists[new_mask], 95)
+        #print(dist_95perc)
+        if dist_95perc < 12 and np.sum(new_mask) > 50:
+            yield new_mask
 
 def compute_linkages(new_labels, saved_labels):
     """Counts the number of adjacent positions between every two labels.
@@ -103,12 +193,17 @@ def find_sheets(section, saved_labels=None, threshold=30000, minsize=25, minval=
         mask = (section > threshold) & (saved_labels == 0)
     section_labels = apply_labels(mask).astype(np.uint16)
     label_ids = np.unique(section_labels)
+    linkages = compute_linkages(section_labels, saved_labels)
     for l in label_ids:
         if l == 0:
             # These were below the threshold
             continue
         mask = section_labels == l
         count = mask.sum()
+        if saved_labels is not None:
+            links = linkages[l]
+            for key in links:
+                mask |= saved_labels == key
         value = np.mean(section[mask]) - threshold
         if count < minsize or value < minval:
             section_labels[mask] = 0
@@ -224,10 +319,10 @@ def split_label_maxflow(
         min_kwargs = {"constraints": cons, "args": col_eigvec}
         solution = optimize.minimize(
             perp_error, initial_guess, **min_kwargs, method="SLSQP",
-            options={"disp": True},
+            options={"disp": False},
         )
         meanvec = np.array(list(solution.x))
-        print(meanvec)
+        print(f"Natural vector: Z {meanvec[0]:.2f} Y {meanvec[1]:.2f} X {meanvec[2]:.2f}")
         z, y, x = np.meshgrid(*[np.arange(s) for s in section_labels.shape], indexing='ij')
         natural_dists = z * meanvec[0] + y * meanvec[1] + x * meanvec[2]
         mind, maxd = np.min(natural_dists[keep_mask]), np.max(natural_dists[keep_mask])
@@ -264,6 +359,8 @@ class AnnotationWindow(QWidget):
         # Radius of the central region of the box
         self.radius = [30, 30, 30]
         self.update_annotations = False
+        # Signal threshold for auto-labeling
+        self.threshold = 30000
 
         grid = QGridLayout()
         self.depth = [
@@ -296,6 +393,21 @@ class AnnotationWindow(QWidget):
         auto_annotate.stateChanged.connect(self.checkAutoUpdate)
         vlayout.addWidget(auto_annotate)
 
+        # Slider for controlling the auto-labeling threshold
+        hl = QHBoxLayout()
+        hl.addWidget(QLabel("Signal Threshold:"))
+        self.threshold_slider = QSlider(Qt.Horizontal)
+        self.threshold_slider.setMinimum(29000)
+        self.threshold_slider.setMaximum(50000)
+        self.threshold_slider.setSingleStep(1000)
+        self.threshold_slider.setPageStep(1000)
+        self.threshold_slider.setValue(self.threshold)
+        self.threshold_slider.valueChanged.connect(self.updateSliders)
+        hl.addWidget(self.threshold_slider)
+        self.threshold_display = QLabel(str(self.threshold))
+        hl.addWidget(self.threshold_display)
+        vlayout.addLayout(hl)
+
         # Sliders for controlling the radius of annotation along each axis
         hl = QHBoxLayout()
         hl.addWidget(QLabel("Z Radius:"))
@@ -303,6 +415,8 @@ class AnnotationWindow(QWidget):
         self.zslider.setMinimum(5)
         self.zslider.setMaximum(75)
         self.zslider.setValue(self.radius[0])
+        self.zslider.setSingleStep(5)
+        self.zslider.setPageStep(5)
         self.zslider.valueChanged.connect(self.updateSliders)
         hl.addWidget(self.zslider)
         self.zrad = QLabel(str(self.radius[0]))
@@ -315,6 +429,8 @@ class AnnotationWindow(QWidget):
         self.yslider.setMinimum(5)
         self.yslider.setMaximum(75)
         self.yslider.setValue(self.radius[1])
+        self.yslider.setSingleStep(5)
+        self.yslider.setPageStep(5)
         self.yslider.valueChanged.connect(self.updateSliders)
         hl.addWidget(self.yslider)
         self.yrad = QLabel(str(self.radius[1]))
@@ -327,6 +443,8 @@ class AnnotationWindow(QWidget):
         self.xslider.setMinimum(5)
         self.xslider.setMaximum(75)
         self.xslider.setValue(self.radius[2])
+        self.xslider.setSingleStep(5)
+        self.xslider.setPageStep(5)
         self.xslider.valueChanged.connect(self.updateSliders)
         hl.addWidget(self.xslider)
         self.xrad = QLabel(str(self.radius[2]))
@@ -391,9 +509,11 @@ class AnnotationWindow(QWidget):
 
 
     def updateSliders(self, slider):
+        self.threshold = self.threshold_slider.value()
         self.radius[0] = self.zslider.value()
         self.radius[1] = self.yslider.value()
         self.radius[2] = self.xslider.value()
+        self.threshold_display.setText(str(self.threshold_slider.value()))
         self.zrad.setText(str(self.zslider.value()))
         self.yrad.setText(str(self.yslider.value()))
         self.xrad.setText(str(self.xslider.value()))
@@ -613,6 +733,9 @@ class AnnotationWindow(QWidget):
         self.drawSlices()
 
     def autofill_button_clicked(self):
+        if not self.update_annotations:
+            print("Autofill not enabled without annotations")
+            return
         button = self.sender()
         col_idx = 3
         row_idx = None
@@ -622,12 +745,58 @@ class AnnotationWindow(QWidget):
         if row_idx is None:
             print("Button sender not found")
             return
-        label_id = int(self.saved_table.item(row_idx, 0).text())
+        saved_label_id = int(self.saved_table.item(row_idx, 0).text())
         vv = self.volume_view
         vol = self.volume_view.volume
+        # Pull out the initial positions to make sure we can reset to here after we're finished
         it, jt, kt = vol.transposedIjkToIjk(vv.ijktf, vv.direction)
-        print(f"Auto-filling label {label_id} around position ({it}, {jt}, {kt})")
+        print(f"Auto-filling label {saved_label_id} around position ({it}, {jt}, {kt})")
 
+        # Get shortcuts for the global-level signal & annotation data
+        section = vol.data
+        labels = self.main_window.annotation.volume
+
+        position_queue = deque()
+        xpos, ypos, zpos = it, jt, kt
+        start_coord = (zpos, ypos, xpos)
+        zslice = slice(max(0, zpos - BOX_RADIUS), min(section.shape[0] - 1, zpos + BOX_RADIUS), None)
+        yslice = slice(max(0, ypos - BOX_RADIUS), min(section.shape[1] - 1, ypos + BOX_RADIUS), None)
+        xslice = slice(max(0, xpos - BOX_RADIUS), min(section.shape[2] - 1, xpos + BOX_RADIUS), None)
+        subsection = section[zslice, yslice, xslice]
+        saved_labels = labels[zslice, yslice, xslice]
+        for new_coord in get_new_box_centers(subsection, saved_labels, start_coord, saved_label_id):
+            position_queue.append(new_coord)
+        total_pixels = 0
+        total_masks = 0
+        i = 0
+        while len(position_queue) > 0:
+            i += 1
+            print(f"Processing coord {i}", end="\r")
+            new_coord = position_queue.popleft()
+            zpos, ypos, xpos = new_coord
+            zslice = slice(max(0, zpos - BOX_RADIUS), min(section.shape[0] - 1, zpos + BOX_RADIUS), None)
+            yslice = slice(max(0, ypos - BOX_RADIUS), min(section.shape[1] - 1, ypos + BOX_RADIUS), None)
+            xslice = slice(max(0, xpos - BOX_RADIUS), min(section.shape[2] - 1, xpos + BOX_RADIUS), None)
+            subsection = section[zslice, yslice, xslice]
+            saved_labels = labels[zslice, yslice, xslice]
+            result = check_box_for_extension(subsection, saved_labels, saved_label_id)
+            if result is None:
+                continue
+            for new_mask in result:
+                saved_labels[new_mask] = saved_label_id
+                self.main_window.annotation.write_annotations(saved_labels, xslice, yslice, zslice)
+                total_pixels += new_mask.sum()
+                total_masks += 1
+                for extended_coord in get_new_box_centers(subsection, new_mask, new_coord, True):
+                    zpos, ypos, xpos = extended_coord
+                    if max([abs(xpos - it), abs(ypos - jt), abs(zpos - kt)]) > MAX_AUTOFILL_DISTANCE:
+                        continue
+                    position_queue.append(extended_coord)
+            if len(position_queue) > 10000:
+                print("Position queue too large; aborting autofill")
+                break
+        print(f"Finished autofill: processed {total_masks} active regions and autofilled {total_pixels} pixels")
+        self.drawSlices()
 
     def drawSlices(self, update_labels=True):
         vv = self.volume_view
@@ -658,7 +827,7 @@ class AnnotationWindow(QWidget):
 
             # Compute local annotations
             self.signal_section = vol.data[kslice, jslice, islice]
-            self.new_labels = find_sheets(self.signal_section, self.saved_labels)
+            self.new_labels = find_sheets(self.signal_section, self.saved_labels, threshold=self.threshold)
             self.update_new_label_table()
 
         # Actually draw the datawindows with appropriate shape offsets
