@@ -88,20 +88,24 @@ class AnnotationData():
     
     def getSlice(self, vv, axis, ijktf):
         vol = vv.volume
+        if not isinstance(vol, CachedZarrVolume):
+            max_width = 150
+        else:
+            max_width = vol.max_width
         it, jt, kt = vol.transposedIjkToIjk(ijktf, vv.direction)
         islice = slice(
-            max(0, it - vol.max_width), 
-            min(vol.data.shape[2], it + vol.max_width + 1),
+            max(0, it - max_width), 
+            min(vol.data.shape[2], it + max_width + 1),
             None,
         )
         jslice = slice(
-            max(0, jt - vol.max_width), 
-            min(vol.data.shape[1], jt + vol.max_width + 1),
+            max(0, jt - max_width), 
+            min(vol.data.shape[1], jt + max_width + 1),
             None,
         )
         kslice = slice(
-            max(0, kt - vol.max_width), 
-            min(vol.data.shape[0], kt + vol.max_width + 1),
+            max(0, kt - max_width), 
+            min(vol.data.shape[0], kt + max_width + 1),
             None,
         )
 
