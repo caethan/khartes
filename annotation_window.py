@@ -243,7 +243,9 @@ def split_label_maxflow(
     # An estimate of planarity:  things are planar when the largest eigenvalue is 
     # significantly larger than the other two
     # note we want *lower* weights for *higher* planarity, so we invert to encourage cuts in planar regions
-    planarity = eigval[2] / eigval[1]
+    planarity = np.zeros_like(norm_signal) + 1e6
+    good_mask = eigval[1] > 0
+    planarity[good_mask] = eigval[2][good_mask] / eigval[1][good_mask]
     scale = np.log10(1 / planarity)
     scale -= scale.min()
 
@@ -769,6 +771,7 @@ class AnnotationWindow(QWidget):
         total_pixels = 0
         total_masks = 0
         i = 0
+        start_time = time.time()
         while len(position_queue) > 0:
             i += 1
             print(f"Processing coord {i}", end="\r")
@@ -795,7 +798,10 @@ class AnnotationWindow(QWidget):
             if len(position_queue) > 10000:
                 print("Position queue too large; aborting autofill")
                 break
+        end_time = time.time()
         print(f"Finished autofill: processed {total_masks} active regions and autofilled {total_pixels} pixels")
+        diff_time_seconds = end_time - start_time
+        print(f"Finished processing in {diff_time_seconds:.1f}")
         self.drawSlices()
 
     def drawSlices(self, update_labels=True):
