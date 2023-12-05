@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
         QAction, QApplication, QAbstractItemView,
         QCheckBox, QComboBox,
         QDialog, QDialogButtonBox,
-        QFileDialog, QFrame,
+        QFileDialog, QFrame, QLayout,
         QGridLayout, QGroupBox,
         QHBoxLayout, 
         QLabel, QLineEdit,
@@ -502,7 +502,10 @@ class AnnotationWindow(QWidget):
 
         grid.addWidget(panel, 3, 0, 3, self.slices + 1, Qt.AlignmentFlag.AlignTop)
 
+        grid.setSizeConstraint(QLayout.SetNoConstraint)
+
         self.setLayout(grid)
+
 
     def checkAutoUpdate(self, checkbox):
         self.update_annotations = checkbox == Qt.Checked
