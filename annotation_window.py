@@ -84,13 +84,6 @@ def compute_perp_dists_to_plane(params, x, y, z):
     length = np.sqrt(a ** 2 + b ** 2 + c ** 2)
     return (np.abs(a * x + b * y + c * z + d) / length)
 
-def perp_error(params, xyz):
-    x, y, z = xyz
-    dists = compute_perp_dists_to_plane(params, x, y, z)
-    # Compute the mean squared distance (note we drop the square root since
-    # it doesn't matter for minimization purposes)
-    return np.mean(dists ** 2)
-
 def fit_plane_to_data(x, y, z):
     """
     Basin-Hopping method, minimize mean absolute values of the
@@ -102,6 +95,13 @@ def fit_plane_to_data(x, y, z):
         """
         a, b, c, d = params
         return a**2 + b**2 + c**2 - 1
+
+    def perp_error(params, xyz):
+        x, y, z = xyz
+        dists = compute_perp_dists_to_plane(params, x, y, z)
+        # Compute the mean squared distance (note we drop the square root since
+        # it doesn't matter for minimization purposes)
+        return np.mean(dists ** 2)
 
     # Random initial guess for the a,b,c,d plane coefficients.
     initial_guess = np.random.uniform(-10., 10., 4)
@@ -850,6 +850,7 @@ class AnnotationWindow(QWidget):
                     # point for this slice and pull out the labels for this region.
                     ijktf = list(vv.ijktf)
                     ijktf[axis] += offsets[axis]
+                    ijktf[axis] = min(max(0, ijktf[axis]), self.new_labels.shape[axis] - 1)
                     # Coords in absolute space
                     it, jt, kt = vol.transposedIjkToIjk(vv.ijktf, vv.direction)
                     # Coords in local label volume space
@@ -862,31 +863,29 @@ class AnnotationWindow(QWidget):
                         assert overlay.shape == slc.shape
                     else:
                         overlay = np.zeros_like(slc, dtype=int)
-                    # TODO: pasting the overlay data into the center is a hack that 
-                    # assumes we're not near the edge of a volume
                     if axis == 1:
                         tmp = (
                             self.new_labels[kidx + offsets[axis], :, :] +
                             self.saved_labels[kidx + offsets[axis], :, :]
                         )
-                        x = (overlay.shape[0] - tmp.shape[0]) // 2
-                        y = (overlay.shape[1] - tmp.shape[1]) // 2
+                        x = max(0, jt - self.radius[1]) - max(0, jt - vol.max_width)
+                        y = max(0, it - self.radius[2]) - max(0, it - vol.max_width)
                         overlay[x:x + tmp.shape[0], y:y + tmp.shape[1]] = tmp
                     elif axis == 2:
                         tmp = (
                             self.new_labels[:, jidx + offsets[axis], :] +
                             self.saved_labels[:, jidx + offsets[axis], :]
                         )
-                        x = (overlay.shape[0] - tmp.shape[0]) // 2
-                        y = (overlay.shape[1] - tmp.shape[1]) // 2
+                        x = max(0, kt - self.radius[0]) - max(0, kt - vol.max_width)
+                        y = max(0, it - self.radius[2]) - max(0, it - vol.max_width)
                         overlay[x:x + tmp.shape[0], y:y + tmp.shape[1]] = tmp
                     elif axis == 0:
                         tmp = (
                             self.new_labels[:, :, iidx + offsets[axis]].T +
                             self.saved_labels[:, :, iidx + offsets[axis]].T
                         )
-                        x = (overlay.shape[0] - tmp.shape[0]) // 2
-                        y = (overlay.shape[1] - tmp.shape[1]) // 2
+                        y = max(0, kt - self.radius[0]) - max(0, kt - vol.max_width)
+                        x = max(0, jt - self.radius[1]) - max(0, jt - vol.max_width)
                         overlay[x:x + tmp.shape[0], y:y + tmp.shape[1]] = tmp
                 else:
                     overlay = None
